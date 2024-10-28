@@ -15,25 +15,42 @@ const REDIRECT_URI = OAuth2Data.web.redirect_uris[0];
 
 const oAuth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
-
 let authed = false;
+
+const TOKEN_PATH = path.join(__dirname, 'token.json');
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-
 const upload = multer({
     dest: uploadDir,
     limits: { fileSize: 10 * 1024 * 1024 },
 });
-app.use(express.static(path.join(__dirname, '..','FE')));
+app.use(express.static(path.join(__dirname, '..', 'FE')));
 
-app.get('/', (req, res) => {
+const saveToken = (token) => {
+    fs.writeFileSync(TOKEN_PATH, JSON.stringify(token)); // Lưu token vào file
+};
+
+const getToken = () => {
+    if (fs.existsSync(TOKEN_PATH)) {
+        const token = fs.readFileSync(TOKEN_PATH);
+        return JSON.parse(token);
+    }
+    return null;
+};
+
+const tokens = getToken();
+if (tokens) {
+    oAuth2Client.setCredentials(tokens); 
+}
+app.get('/login', (req, res) => {
     if (!authed) {
         const authUrl = oAuth2Client.generateAuthUrl({
-            access_type: 'offline', 
+            access_type: 'offline',
+            prompt: 'consent',
             scope: ['https://www.googleapis.com/auth/drive.file'],
         });
         res.send(`<html>
@@ -47,31 +64,30 @@ app.get('/', (req, res) => {
     }
 });
 
-app.get('/oauth2callback', (req, res) => {
+app.get('/oauth2callback', async (req, res) => {
     const code = req.query.code;
     if (code) {
-        oAuth2Client.getToken(code, (err, tokens) => {
-            if (err) return console.error('Error getting oAuth tokens:', err);
+        try {
+            const { tokens } = await oAuth2Client.getToken(code);
             oAuth2Client.setCredentials(tokens);
-            
-            if (tokens.refresh_token) {
-                fs.writeFileSync('token.json', JSON.stringify(tokens));
-                console.log('Refresh token saved.');
-            }
+            saveToken(tokens); 
 
-            authed = true;
             res.redirect('/');
-        });
+        } catch (err) {
+            console.error('Error getting oAuth tokens:', err);
+            res.status(500).send('Authentication failed');
+        }
+    } else {
+        res.status(400).send('No authorization code provided');
     }
 });
 
-if (fs.existsSync('token.json')) {
-    const tokens = JSON.parse(fs.readFileSync('token.json', 'utf8'));
+app.post('/upload', upload.single('file'), async (req, res) => {
+    const tokens = getToken();
+    if (!tokens) {
+        return res.status(403).send('User is not authenticated');
+    }
     oAuth2Client.setCredentials(tokens);
-    authed = true;
-}
-
-app.post('/upload', upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).send('No file uploaded.');
     }
@@ -114,5 +130,5 @@ app.post('/upload', upload.single('file'), (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(`Server is running on http://localhost:${PORT}/login`);
 });
